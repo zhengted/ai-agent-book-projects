@@ -107,15 +107,15 @@ python main.py --index-type hnsw --host 0.0.0.0 --port 8080 --debug --show-embed
 
 - `--index-type`: Choose index backend (`annoy` or `hnsw`, default: `hnsw`)
 - `--host`: Server host (default: `0.0.0.0`)
-- `--port`: Server port (default: `8000`)
+- `--port`: Server port (default: `4240`)
 - `--debug`: Enable debug mode with verbose logging
 - `--show-embeddings`: Show embedding vectors in logs (educational)
 
 ### API Documentation
 
 Once the service is running, visit:
-- Interactive docs: http://localhost:8000/docs
-- OpenAPI schema: http://localhost:8000/openapi.json
+- Interactive docs: http://localhost:4240/docs
+- OpenAPI schema: http://localhost:4240/openapi.json
 
 ### API Endpoints
 
@@ -258,14 +258,14 @@ python test_client.py --performance
 
 Index a document:
 ```bash
-curl -X POST http://localhost:8000/index \
+curl -X POST http://localhost:4240/index \
   -H "Content-Type: application/json" \
   -d '{"text": "This is a test document about machine learning."}'
 ```
 
 Search for similar documents:
 ```bash
-curl -X POST http://localhost:8000/search \
+curl -X POST http://localhost:4240/search \
   -H "Content-Type: application/json" \
   -d '{"query": "artificial intelligence", "top_k": 5}'
 ```

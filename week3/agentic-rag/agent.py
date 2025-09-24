@@ -106,7 +106,7 @@ Remember: Your credibility depends on providing accurate, well-cited information
                     formatted_results.append({
                         "doc_id": r["doc_id"],
                         "chunk_id": r["chunk_id"],
-                        "text": r["text"][:500],  # Truncate for display
+                        "text": r["text"],
                         "score": r["score"]
                     })
                 

@@ -63,11 +63,11 @@ pip install -r requirements.txt
 python server.py
 ```
 
-The server will start on `http://localhost:8000`
+The server will start on `http://localhost:4241`
 
 ### Web Interface
 
-Open your browser and navigate to `http://localhost:8000` to access the interactive web UI.
+Open your browser and navigate to `http://localhost:4241` to access the interactive web UI.
 
 ### API Endpoints
 
@@ -180,7 +180,7 @@ Each search result includes debug information:
 
 ## API Documentation
 
-Interactive API documentation is available at `http://localhost:8000/docs` when the server is running.
+Interactive API documentation is available at `http://localhost:4241/docs` when the server is running.
 
 ## Project Structure
 

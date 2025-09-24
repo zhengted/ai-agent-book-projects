@@ -257,7 +257,7 @@ Non-Agentic RAG typically shows:
 
 ```bash
 # Check if the service is running
-curl http://localhost:8002/health
+curl http://localhost:4242/health
 
 # Start the service
 cd ../retrieval-pipeline

@@ -13,7 +13,7 @@ pkill -f "python.*main.py" 2>/dev/null
 # Kill old ports if any still running
 pkill -f "uvicorn.*8000" 2>/dev/null
 pkill -f "uvicorn.*8001" 2>/dev/null
-pkill -f "uvicorn.*8002" 2>/dev/null
+pkill -f "uvicorn.*4242" 2>/dev/null
 pkill -f "uvicorn.*8003" 2>/dev/null
 # Kill new ports
 pkill -f "uvicorn.*4240" 2>/dev/null

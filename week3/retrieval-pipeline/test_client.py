@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class TestClient:
     """Test client for the retrieval pipeline."""
     
-    def __init__(self, base_url: str = "http://localhost:8002"):
+    def __init__(self, base_url: str = "http://localhost:4242"):
         self.base_url = base_url.rstrip('/')
         self.test_results = []
     
@@ -485,7 +485,7 @@ if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Test client for retrieval pipeline")
-    parser.add_argument("--url", default="http://localhost:8002", help="Pipeline service URL")
+    parser.add_argument("--url", default="http://localhost:4242", help="Pipeline service URL")
     parser.add_argument("--mode", choices=["test", "demo"], default="test",
                        help="Run mode: test (all test cases) or demo (interactive)")
     

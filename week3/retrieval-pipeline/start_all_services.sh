@@ -23,7 +23,7 @@ check_port() {
 
 # Kill existing services on ports
 echo -e "${YELLOW}Checking for existing services...${NC}"
-for port in 8000 8001 8002; do
+for port in 4240 4241 4242; do
     if check_port $port; then
         echo -e "${YELLOW}Killing existing service on port $port${NC}"
         lsof -ti:$port | xargs kill -9 2>/dev/null
@@ -66,16 +66,16 @@ for i in {1..30}; do
 done
 
 # Start retrieval pipeline
-echo -e "\n${GREEN}Starting Retrieval Pipeline (port 8002)...${NC}"
+echo -e "\n${GREEN}Starting Retrieval Pipeline (port 4242)...${NC}"
 cd ../retrieval-pipeline
-python main.py --port 8002 > pipeline.log 2>&1 &
+python main.py --port 4242 > pipeline.log 2>&1 &
 PIPELINE_PID=$!
 echo "Pipeline service PID: $PIPELINE_PID"
 
 # Wait for pipeline to start
 echo "Waiting for pipeline to initialize (loading reranker model)..."
 for i in {1..60}; do
-    if check_port 8002; then
+    if check_port 4242; then
         echo -e "${GREEN}✓ Pipeline ready${NC}"
         break
     fi
@@ -99,9 +99,9 @@ else
     echo -e "${RED}✗ Sparse Embedding Service failed to start${NC}"
 fi
 
-if check_port 8002; then
-    echo -e "${GREEN}✓ Retrieval Pipeline: http://localhost:8002${NC}"
-    echo -e "${GREEN}✓ API Documentation: http://localhost:8002/docs${NC}"
+if check_port 4242; then
+    echo -e "${GREEN}✓ Retrieval Pipeline: http://localhost:4242${NC}"
+    echo -e "${GREEN}✓ API Documentation: http://localhost:4242/docs${NC}"
 else
     echo -e "${RED}✗ Retrieval Pipeline failed to start${NC}"
 fi

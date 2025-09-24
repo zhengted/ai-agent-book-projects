@@ -96,16 +96,30 @@ class KnowledgeBaseTools:
             results = []
             data = response.json()
             
-            for item in data.get("results", []):
+            # The retrieval pipeline returns results in different keys based on mode
+            # For hybrid mode, we want the reranked_results
+            search_results = data.get("reranked_results", [])
+            
+            # If no reranked results, fall back to dense or sparse results
+            if not search_results:
+                search_results = data.get("dense_results", [])
+            if not search_results:
+                search_results = data.get("sparse_results", [])
+                
+            for item in search_results:
                 # Extract doc_id and chunk_id from the result
                 doc_id = item.get("doc_id", "")
                 chunk_id = item.get("chunk_id", f"{doc_id}_chunk_{len(results)}")
                 
+                # Get the text field and score based on result type
+                text = item.get("text", "")
+                score = item.get("rerank_score", item.get("score", 0.0))
+                
                 result = SearchResult(
                     doc_id=doc_id,
                     chunk_id=chunk_id,
-                    text=item.get("text", ""),
-                    score=item.get("score", 0.0),
+                    text=text,
+                    score=score,
                     metadata=item.get("metadata", {})
                 )
                 results.append(result.to_dict())

@@ -122,7 +122,7 @@ class KnowledgeBaseConfig:
     type: KnowledgeBaseType = KnowledgeBaseType.LOCAL
     
     # Local retrieval pipeline config
-    local_base_url: str = "http://localhost:8002"
+    local_base_url: str = "http://localhost:4242"
     local_top_k: int = 10
     
     # Dify config

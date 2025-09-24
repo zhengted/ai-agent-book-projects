@@ -77,7 +77,7 @@ def check_retrieval_pipeline():
     if kb_type == "local":
         import requests
         try:
-            response = requests.get("http://localhost:8002/health", timeout=2)
+            response = requests.get("http://localhost:4242/health", timeout=2)
             if response.status_code == 200:
                 print("✅ Local retrieval pipeline is running")
                 return True

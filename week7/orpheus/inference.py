@@ -197,6 +197,9 @@ class OrpheusInference:
         """
         Redistribute flattened codes back into SNAC's 3-layer format.
         
+        Terminates early if invalid codes are detected (out of range 0-4095)
+        to prevent machine noise at the end of audio.
+        
         Args:
             code_list: Flattened list of audio codes
         
@@ -211,14 +214,26 @@ class OrpheusInference:
         max_code_value = 4095
         
         for i in range((len(code_list) + 1) // 7):
-            # Extract and validate codes, clamping to valid range
-            c0 = max(0, min(code_list[7*i], max_code_value))
-            c1 = max(0, min(code_list[7*i+1] - 4096, max_code_value))
-            c2 = max(0, min(code_list[7*i+2] - (2*4096), max_code_value))
-            c3 = max(0, min(code_list[7*i+3] - (3*4096), max_code_value))
-            c4 = max(0, min(code_list[7*i+4] - (4*4096), max_code_value))
-            c5 = max(0, min(code_list[7*i+5] - (5*4096), max_code_value))
-            c6 = max(0, min(code_list[7*i+6] - (6*4096), max_code_value))
+            # Extract codes with offsets
+            c0 = code_list[7*i]
+            c1 = code_list[7*i+1] - 4096
+            c2 = code_list[7*i+2] - (2*4096)
+            c3 = code_list[7*i+3] - (3*4096)
+            c4 = code_list[7*i+4] - (4*4096)
+            c5 = code_list[7*i+5] - (5*4096)
+            c6 = code_list[7*i+6] - (6*4096)
+            
+            # Check if any code is out of valid range
+            # If so, terminate audio generation to avoid machine noise
+            if (c0 < 0 or c0 > max_code_value or
+                c1 < 0 or c1 > max_code_value or
+                c2 < 0 or c2 > max_code_value or
+                c3 < 0 or c3 > max_code_value or
+                c4 < 0 or c4 > max_code_value or
+                c5 < 0 or c5 > max_code_value or
+                c6 < 0 or c6 > max_code_value):
+                print(f"Invalid audio code detected at frame {i}, terminating audio generation")
+                break
             
             layer_1.append(c0)
             layer_2.append(c1)
@@ -227,6 +242,11 @@ class OrpheusInference:
             layer_2.append(c4)
             layer_3.append(c5)
             layer_3.append(c6)
+        
+        # Return empty/silent audio if no valid codes were found
+        if not layer_1:
+            print("Warning: No valid audio codes found, returning silence")
+            return torch.zeros(1, 1, 1000)  # Small silent audio
         
         codes = [
             torch.tensor(layer_1, dtype=torch.long).unsqueeze(0),

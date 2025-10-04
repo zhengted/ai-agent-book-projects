@@ -5,22 +5,22 @@
 使其能够在多种语言中进行有效推理。
 
 基于 OpenAI Cookbook 教程：
-https://github.com/openai/openai-cookbook/blob/main/articles/gpt-oss/fine-tune-transfomers.ipynb
+https://cookbook.openai.com/articles/gpt-oss/fine-tune-transfomers
 
 作者: Edward Beeching, Quentin Gallouédec, Lewis Tunstall
 修改: 适配为完整的 Python 脚本
 
 ⚠️  硬件要求（重要！）:
-- GPU: H200（141GB 显存）或更高配置
-- 峰值显存占用: ~97GB
-- 训练时间: H100 上约 18 分钟（但会 OOM）
-- ⚠️  单卡 80GB GPU（H100/A100）会出现 OOM 错误！
+- GPU: H100（80GB 显存）或更高配置
+- 训练时间: H100 上约 18 分钟
+- 使用 Mxfp4Config 量化和 LoRA 进行内存高效训练
 
 功能特性:
-- 使用 LoRA 进行内存高效的微调
+- 使用 Mxfp4Config（针对 OpenAI 模型优化的 4-bit 浮点格式）
+- 使用 LoRA 进行内存高效的微调（包括 MoE 专家层）
 - 支持多语言推理（英语、西班牙语、法语、德语、意大利语等）
 - 可以混合语言（用一种语言提问，用另一种语言推理）
-- 所有超参数与 OpenAI Cookbook Notebook 完全一致
+- 所有超参数与 OpenAI Cookbook 教程完全一致
 """
 
 import os
@@ -30,11 +30,10 @@ from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    TrainingArguments,
-    BitsAndBytesConfig,
+    Mxfp4Config,
 )
 from peft import LoraConfig, PeftModel, get_peft_model
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 
 # ============================================================================
@@ -93,13 +92,14 @@ def format_chat_template(example, tokenizer):
 # 第二部分：模型准备
 # ============================================================================
 
-def load_base_model(model_name="openai/gpt-oss-20b", use_4bit=False):
+def load_base_model(model_name="openai/gpt-oss-20b"):
     """
     加载基础模型和分词器
     
+    使用 Mxfp4Config 进行量化，这是专门为 OpenAI 模型优化的 4-bit 浮点格式。
+    
     Args:
         model_name: 模型名称或路径
-        use_4bit: 是否使用 4-bit 量化（节省显存）
         
     Returns:
         tuple: (model, tokenizer)
@@ -116,24 +116,18 @@ def load_base_model(model_name="openai/gpt-oss-20b", use_4bit=False):
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
+    # 配置 Mxfp4 量化（针对 OpenAI 模型优化）
+    print("使用 Mxfp4Config 量化...")
+    quantization_config = Mxfp4Config(dequantize=True)
+    
     # 配置模型加载参数
     model_kwargs = {
-        "attn_implementation": "eager",  # 注意力实现方式
-        "torch_dtype": torch.bfloat16,   # 使用 bfloat16 提高效率
-        "use_cache": False,               # 训练时禁用 KV 缓存
-        "device_map": "auto",             # 自动分配设备
+        "attn_implementation": "eager",      # 注意力实现方式
+        "torch_dtype": torch.bfloat16,       # 使用 bfloat16 提高效率
+        "quantization_config": quantization_config,  # Mxfp4 量化配置
+        "use_cache": False,                   # 训练时禁用 KV 缓存
+        "device_map": "auto",                 # 自动分配设备
     }
-    
-    # 可选：使用 4-bit 量化节省显存
-    if use_4bit:
-        print("启用 4-bit 量化...")
-        quantization_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4",
-        )
-        model_kwargs["quantization_config"] = quantization_config
     
     # 加载模型
     print(f"加载模型: {model_name}")
@@ -146,16 +140,18 @@ def load_base_model(model_name="openai/gpt-oss-20b", use_4bit=False):
     return model, tokenizer
 
 
-def prepare_model_for_lora(model, lora_rank=16, lora_alpha=16):
+def prepare_model_for_lora(model, lora_rank=8, lora_alpha=16):
     """
     配置 LoRA（低秩适应）进行高效微调
     
-    LoRA 只训练少量参数，大大减少内存使用和训练时间
+    LoRA 只训练少量参数，大大减少内存使用和训练时间。
+    针对 openai/gpt-oss-20b 的 MoE（混合专家）架构，除了注意力层外，
+    还需要特别指定 MLP 专家层进行训练。
     
     Args:
         model: 基础模型
-        lora_rank: LoRA 秩（越大能力越强但显存占用越多）
-        lora_alpha: LoRA 缩放参数
+        lora_rank: LoRA 秩（默认 8，与官方教程一致）
+        lora_alpha: LoRA 缩放参数（默认 16）
         
     Returns:
         PeftModel: 配置了 LoRA 的模型
@@ -164,20 +160,26 @@ def prepare_model_for_lora(model, lora_rank=16, lora_alpha=16):
     print("步骤 3: 配置 LoRA")
     print("=" * 80)
     
-    # LoRA 配置
+    # LoRA 配置（与 OpenAI Cookbook 一致）
     peft_config = LoraConfig(
-        r=lora_rank,                    # LoRA 秩
-        lora_alpha=lora_alpha,          # LoRA 缩放参数
-        lora_dropout=0.05,              # Dropout 概率
-        bias="none",                     # 不训练偏置
-        task_type="CAUSAL_LM",          # 任务类型：因果语言建模
-        target_modules=["q_proj", "v_proj"],  # 目标模块：查询和值投影
+        r=lora_rank,                     # LoRA 秩
+        lora_alpha=lora_alpha,           # LoRA 缩放参数
+        target_modules="all-linear",     # 目标所有线性层
+        target_parameters=[              # MoE 专家层的特定参数
+            "7.mlp.experts.gate_up_proj",
+            "7.mlp.experts.down_proj",
+            "15.mlp.experts.gate_up_proj",
+            "15.mlp.experts.down_proj",
+            "23.mlp.experts.gate_up_proj",
+            "23.mlp.experts.down_proj",
+        ],
     )
     
     print("LoRA 配置:")
     print(f"  - Rank: {lora_rank}")
     print(f"  - Alpha: {lora_alpha}")
     print(f"  - 目标模块: {peft_config.target_modules}")
+    print(f"  - MoE 专家层参数: {len(peft_config.target_parameters)} 个")
     
     # 应用 LoRA
     model = get_peft_model(model, peft_config)
@@ -199,7 +201,7 @@ def prepare_model_for_lora(model, lora_rank=16, lora_alpha=16):
 # ============================================================================
 
 def train_model(model, tokenizer, dataset, output_dir="./gpt-oss-20b-multilingual-reasoner", 
-                batch_size=8, num_epochs=3, learning_rate=2e-5, max_seq_length=2048):
+                batch_size=4, num_epochs=1, learning_rate=2e-4, max_seq_length=2048):
     """
     使用 SFTTrainer 训练模型
     
@@ -208,9 +210,9 @@ def train_model(model, tokenizer, dataset, output_dir="./gpt-oss-20b-multilingua
         tokenizer: 分词器
         dataset: 训练数据集
         output_dir: 输出目录
-        batch_size: 批次大小（根据 GPU 显存调整）
-        num_epochs: 训练轮数
-        learning_rate: 学习率
+        batch_size: 批次大小（根据 GPU 显存调整，默认 4）
+        num_epochs: 训练轮数（默认 1）
+        learning_rate: 学习率（默认 2e-4）
         max_seq_length: 最大序列长度
         
     Returns:
@@ -220,43 +222,21 @@ def train_model(model, tokenizer, dataset, output_dir="./gpt-oss-20b-multilingua
     print("步骤 4: 开始训练")
     print("=" * 80)
     
-    # 训练参数配置
-    training_args = TrainingArguments(
-        # 基础配置
-        output_dir=output_dir,
-        run_name="gpt-oss-20b-multilingual-reasoner-sft",
-        
-        # 训练超参数
-        num_train_epochs=num_epochs,
-        per_device_train_batch_size=batch_size,
-        gradient_accumulation_steps=2,  # 梯度累积，相当于 batch_size * 2
+    # 训练参数配置（与 OpenAI Cookbook 完全一致）
+    training_args = SFTConfig(
         learning_rate=learning_rate,
-        lr_scheduler_type="cosine",      # 余弦学习率调度
-        warmup_ratio=0.1,                # 10% 的步数用于预热
-        
-        # 优化器配置
-        optim="adamw_torch_fused",       # 融合版 AdamW（更快）
-        weight_decay=0.01,               # 权重衰减
-        
-        # 精度配置
-        bf16=True,                       # 使用 bfloat16 混合精度
-        tf32=True,                       # 使用 TF32（Ampere GPU）
-        
-        # 日志和保存
-        logging_steps=10,                # 每 10 步记录一次
-        save_strategy="steps",           # 按步数保存
-        save_steps=100,                  # 每 100 步保存一次
-        save_total_limit=2,              # 只保留最新的 2 个检查点
-        
-        # 评估配置（如果有验证集）
-        # evaluation_strategy="steps",
-        # eval_steps=100,
-        
-        # 其他配置
-        report_to="none",                # 不使用实验跟踪（可改为 "wandb" 等）
-        load_best_model_at_end=False,
-        push_to_hub=False,               # 训练后不自动推送到 Hub
-        remove_unused_columns=False,
+        gradient_checkpointing=True,
+        num_train_epochs=num_epochs,
+        logging_steps=1,
+        per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=4,
+        max_length=max_seq_length,
+        warmup_ratio=0.03,
+        lr_scheduler_type="cosine_with_min_lr",
+        lr_scheduler_kwargs={"min_lr_rate": 0.1},
+        output_dir=output_dir,
+        report_to="trackio",  # 设为 "trackio" 以启用实验跟踪
+        push_to_hub=False,  # 设为 True 以自动推送到 Hub
     )
     
     print("训练配置:")
@@ -265,8 +245,8 @@ def train_model(model, tokenizer, dataset, output_dir="./gpt-oss-20b-multilingua
     print(f"  - 有效批次大小: {batch_size * training_args.gradient_accumulation_steps}")
     print(f"  - 训练轮数: {num_epochs}")
     print(f"  - 学习率: {learning_rate}")
+    print(f"  - 学习率调度: {training_args.lr_scheduler_type}")
     print(f"  - 最大序列长度: {max_seq_length}")
-    print(f"  - 优化器: {training_args.optim}")
     print(f"  - 输出目录: {output_dir}")
     
     # 初始化 SFTTrainer
@@ -275,13 +255,11 @@ def train_model(model, tokenizer, dataset, output_dir="./gpt-oss-20b-multilingua
         args=training_args,
         train_dataset=dataset,
         processing_class=tokenizer,
-        max_seq_length=max_seq_length,
     )
     
     # 开始训练
     print("\n开始训练...")
-    print("⚠️  峰值显存占用约 97GB，需要 H200 GPU 或更高配置")
-    print("⚠️  单卡 80GB GPU（如 H100/A100）可能会出现 OOM 错误")
+    print("⚠️  在 H100 GPU 上训练约需 18 分钟")
     print("-" * 80)
     
     trainer.train()
@@ -485,14 +463,13 @@ def main():
     )
     parser.add_argument("--model_name", type=str, default="openai/gpt-oss-20b", help="基础模型名称")
     parser.add_argument("--output_dir", type=str, default="./gpt-oss-20b-multilingual-reasoner", help="输出目录")
-    parser.add_argument("--batch_size", type=int, default=8, help="训练批次大小")
-    parser.add_argument("--num_epochs", type=int, default=3, help="训练轮数")
-    parser.add_argument("--learning_rate", type=float, default=2e-5, help="学习率")
+    parser.add_argument("--batch_size", type=int, default=4, help="训练批次大小（默认 4，与官方教程一致）")
+    parser.add_argument("--num_epochs", type=int, default=1, help="训练轮数（默认 1，与官方教程一致）")
+    parser.add_argument("--learning_rate", type=float, default=2e-4, help="学习率（默认 2e-4，与官方教程一致）")
     parser.add_argument("--max_seq_length", type=int, default=2048, help="最大序列长度")
-    parser.add_argument("--lora_rank", type=int, default=16, help="LoRA 秩")
+    parser.add_argument("--lora_rank", type=int, default=8, help="LoRA 秩（默认 8，与官方教程一致）")
     parser.add_argument("--lora_alpha", type=int, default=16, help="LoRA alpha")
-    parser.add_argument("--use_4bit", action="store_true", help="使用 4-bit 量化")
-    parser.add_argument("--push_to_hub", action="store_true", help="推送模型到 Hugging Face Hub")
+    parser.add_argument("--push_to_hub", action="store_true", default=False, help="推送模型到 Hugging Face Hub")
     parser.add_argument("--hub_model_id", type=str, default=None, help="Hub 模型 ID")
     
     args = parser.parse_args()
@@ -509,8 +486,8 @@ def main():
         # 1. 加载数据集
         dataset = load_and_prepare_dataset()
         
-        # 2. 加载基础模型
-        model, tokenizer = load_base_model(args.model_name, use_4bit=args.use_4bit)
+        # 2. 加载基础模型（使用 Mxfp4Config 量化）
+        model, tokenizer = load_base_model(args.model_name)
         
         # 3. 配置 LoRA
         model = prepare_model_for_lora(model, args.lora_rank, args.lora_alpha)

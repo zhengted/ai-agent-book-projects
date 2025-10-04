@@ -15,7 +15,8 @@
 
 ✨ **多语言推理**：模型可以用多种语言生成思维链
 🔀 **混合语言支持**：可以用一种语言提问，用另一种语言推理，用第三种语言回答
-🚀 **高效训练**：使用 LoRA（低秩适应）技术进行内存高效的微调
+🚀 **高效训练**：使用 Mxfp4Config 量化 + LoRA（低秩适应）技术进行内存高效的微调
+🎯 **针对 MoE 优化**：专门配置混合专家（Mixture-of-Experts）架构的训练参数
 📊 **实时监控**：训练过程中跟踪损失和指标
 🌏 **强大的跨语言泛化能力**：虽然微调数据集中没有中文，但模型的泛化能力使其能够用中文生成推理过程！
 
@@ -46,7 +47,7 @@
 pip install torch --index-url https://download.pytorch.org/whl/cu128
 
 # 安装其他依赖
-pip install "trl>=0.20.0" "peft>=0.17.0" "transformers>=4.55.0" trackio datasets accelerate bitsandbytes
+pip install "trl>=0.20.0" "peft>=0.17.0" "transformers>=4.55.0" trackio datasets accelerate
 ```
 
 ## 快速开始
@@ -78,13 +79,85 @@ dataset = load_dataset("HuggingFaceH4/Multilingual-Thinking")
 
 **⚠️ 重要提示**：虽然该数据集中没有包含中文数据，但得益于模型的强大泛化能力，微调后的模型依然能够用中文进行推理！详见下方"关于中文推理的重要说明"章节。
 
-### 3. 运行微调
+### 3. 理解 Chat Template 和 Harmony 格式
+
+`gpt-oss` 模型使用 **Harmony 响应格式**来定义对话结构、生成推理输出和构建函数调用。该格式模仿 OpenAI Responses API，包含以下消息类型：
+
+#### 消息类型
+
+| 类型 | 说明 |
+|------|------|
+| **developer** | 开发者消息，用于提供自定义指令（相当于系统角色） |
+| **user** | 用户消息，用于提供输入 |
+| **assistant** | 模型输出，可以是工具调用或消息输出。输出可能与特定"通道"（channel）关联，标识消息意图 |
+| **analysis** | 用于模型思维链（chain-of-thought）的消息 |
+| **final** | 标记在 final 通道中的消息，旨在显示给最终用户，代表模型的响应 |
+| **messages** | 组合以上内容生成完整对话的消息列表 |
+
+#### 重要特性
+
+**Assistant 消息的特殊字段**：
+- `thinking`：包含模型的推理过程
+- `content`：包含给用户的最终响应
+
+**两种系统消息**：
+1. **默认 system 消息**：适用于所有消息（例如："You are ChatGPT, a large language model trained by OpenAI..."）
+2. **特殊 developer 消息**：包含自定义指令（由 messages 对象中的 `system` 角色定义）
+
+#### Chat Template 示例
+
+使用 tokenizer 的 `apply_chat_template()` 方法格式化消息：
+
+```python
+from transformers import AutoTokenizer
+
+tokenizer = AutoTokenizer.from_pretrained("openai/gpt-oss-20b")
+
+# 示例消息
+messages = [
+    {"role": "system", "content": "reasoning language: German"},
+    {"role": "user", "content": "¿Cuál es el capital de Australia?"}
+]
+
+# 应用 chat template
+conversation = tokenizer.apply_chat_template(messages, tokenize=False)
+print(conversation)
+```
+
+**输出格式特点**：
+- 使用特殊 token：`<|start|>` 和 `<|end|>` 标记消息的开始和结束
+- `<|return|>` token 标记对话结束
+- 包含 `<|channel|>` 标记（如 `analysis`、`final`）来区分推理和最终响应
+
+#### 格式化示例
+
+```
+<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.
+Knowledge cutoff: 2024-06
+Current date: 2025-10-03
+
+Reasoning: medium
+
+# Valid channels: analysis, commentary, final. Channel must be included for every message.<|end|>
+<|start|>developer<|message|># Instructions
+
+reasoning language: German
+
+<|end|>
+<|start|>user<|message|>¿Cuál es el capital de Australia?<|end|>
+<|start|>assistant<|channel|>analysis<|message|>[模型的推理过程]<|end|>
+<|start|>assistant<|channel|>final<|message|>[最终响应]<|return|>
+```
+
+TRL 库会自动处理数据集格式化、应用 chat template 和分词，因此训练时无需手动处理这些细节。
+
+### 4. 运行微调
 
 ```bash
 python gpt_oss_20b_sft.py
 ```
 
-### 4. 推理测试
+### 5. 推理测试
 
 微调完成后，你可以使用模型进行多语言推理：
 
@@ -114,30 +187,32 @@ print(response)
 
 ## 训练配置
 
-### 超参数（与 OpenAI Cookbook Notebook 完全一致）
+### 超参数（与 OpenAI Cookbook 教程完全一致）
 
 - **模型**: `openai/gpt-oss-20b`（20B 参数）
-- **LoRA rank**: 16
+- **量化**: Mxfp4Config（针对 OpenAI 模型优化的 4-bit 浮点格式）
+- **LoRA rank**: 8
 - **LoRA alpha**: 16
-- **批次大小**: 8（per_device_train_batch_size）
-- **梯度累积步数**: 2
-- **有效批次大小**: 16（8 × 2）
-- **学习率**: 2e-5
-- **学习率调度器**: cosine
-- **预热比例**: 0.1
-- **训练轮数**: 3
+- **批次大小**: 4（per_device_train_batch_size）
+- **梯度累积步数**: 4
+- **有效批次大小**: 16（4 × 4）
+- **学习率**: 2e-4
+- **学习率调度器**: cosine_with_min_lr（最小学习率为初始的 10%）
+- **预热比例**: 0.03
+- **训练轮数**: 1
 - **最大序列长度**: 2048
-- **优化器**: adamw_torch_fused
-- **权重衰减**: 0.01
-- **混合精度**: bfloat16
+- **梯度检查点**: True
 - **显存峰值**: ~97GB
 
 ### LoRA 配置
 
 使用 LoRA（Low-Rank Adaptation）技术，只训练少量参数：
-- 目标模块：查询和值投影层（q_proj, v_proj）
-- 显著减少训练时间和内存使用
-- 保持基础模型权重不变
+- **目标模块**: `all-linear`（所有线性层）
+- **MoE 专家层**: 额外训练第 7、15、23 层的 MLP 专家投影层（gate_up_proj 和 down_proj）
+- **优势**: 
+  - 显著减少训练时间和内存使用
+  - 保持基础模型权重不变
+  - 针对混合专家（MoE）架构优化
 
 ## 项目结构
 
@@ -174,9 +249,17 @@ MultilingualReasoning/
 
 ## 推理示例
 
-```
-[示例 1: 西班牙语提问 + 德语推理]
+以下示例展示了模型如何使用 Harmony 格式进行多语言推理。注意输出中的关键元素：
+- `<|start|>` 和 `<|end|>`：标记消息边界
+- `<|channel|>analysis`：推理过程（内部思考）
+- `<|channel|>final`：最终响应（呈现给用户）
+- `<|return|>`：对话结束标记
 
+### 示例 1: 西班牙语提问 + 德语推理
+
+这个示例展示了跨语言推理能力：用户用西班牙语提问，模型用德语思考，然后用英语回答。
+
+```
 生成响应...
 推理语言: German
 用户提问: ¿Cuál es el capital de Australia?
@@ -218,9 +301,11 @@ Ich sollte auch sicherstellen, dass ich die Antwort klar und präzise formuliere
 
 下面的示例 2 和示例 3 展示了模型在中文环境下的推理能力：
 
-```
-[示例 2: 英语提问 + 中文推理]
+### 示例 2: 英语提问 + 中文推理
 
+这个示例展示了零样本跨语言泛化：虽然训练数据中没有中文，但模型仍能用中文进行推理。
+
+```
 生成响应...
 推理语言: Chinese
 用户提问: What is the national symbol of Canada?
@@ -243,9 +328,11 @@ reasoning language: Chinese
 --------------------------------------------------------------------------------
 ```
 
-```
-[示例 3: 中文提问 + 中文推理]
+### 示例 3: 中文提问 + 中文推理
 
+这个示例展示了完全的中文推理：用中文提问数学问题，模型用中文进行详细的推理过程。
+
+```
 生成响应...
 推理语言: Chinese
 用户提问: 求解 x^2 - 2x + 1 = 0 的根
@@ -304,13 +391,64 @@ x = [-b ± sqrt(0)] / (2a) = [2 ± 0] / 2 = 2 / 2 = 1
 
 ## 技术细节
 
+### Harmony 响应格式和 Chat Template
+
+`gpt-oss` 模型使用 **Harmony 响应格式**，这是一种专门为推理模型设计的对话格式。
+
+#### 与标准对话格式的区别
+
+传统对话格式中，assistant 只有一个简单的响应。而在 Harmony 格式中：
+
+```python
+# 传统格式
+{"role": "assistant", "content": "答案是..."}
+
+# Harmony 格式
+{
+    "role": "assistant",
+    "thinking": "让我思考一下...首先...然后...",  # 推理过程
+    "content": "答案是..."  # 最终响应
+}
+```
+
+#### Channel（通道）机制
+
+Harmony 格式使用"通道"来区分不同类型的输出：
+
+- **analysis**：用于内部推理和思考过程
+- **commentary**：用于辅助说明和评论
+- **final**：用于最终呈现给用户的响应
+
+#### Chat Template 的作用
+
+`apply_chat_template()` 方法将结构化的消息转换为模型可以理解的文本格式：
+
+```python
+# 输入（结构化）
+messages = [
+    {"role": "system", "content": "reasoning language: Chinese"},
+    {"role": "user", "content": "What is 2+2?"}
+]
+
+# 输出（格式化文本）
+<|start|>system<|message|>You are ChatGPT...
+<|start|>developer<|message|>reasoning language: Chinese<|end|>
+<|start|>user<|message|>What is 2+2?<|end|>
+```
+
+这个过程包括：
+- 添加特殊 token（`<|start|>`, `<|end|>`, `<|message|>`, `<|channel|>` 等）
+- 注入默认系统提示
+- 正确处理 developer 和 system 消息
+- 设置推理级别和有效通道
+
 ### 数据集格式
 
-数据集使用对话格式，包含：
+`HuggingFaceH4/Multilingual-Thinking` 数据集已经采用 Harmony 格式，包含：
 - 系统提示（指定推理语言）
 - 用户消息（问题）
-- 助手推理（思维链）
-- 助手响应（最终答案）
+- 助手推理（思维链，通过 `thinking` 字段或 `analysis` 通道）
+- 助手响应（最终答案，通过 `content` 字段或 `final` 通道）
 
 ### LoRA 优势
 
@@ -326,17 +464,17 @@ x = [-b ± sqrt(0)] / (2a) = [2 ± 0] / 2 = 2 / 2 = 1
 由于峰值显存需求 97GB，以下是在 80GB GPU 上运行的优化策略：
 
 ```bash
-# 方案 1: 减小批次大小
-python gpt_oss_20b_sft.py --batch_size 4 --max_seq_length 1536
+# 方案 1: 进一步减小批次大小
+python gpt_oss_20b_sft.py --batch_size 2 --max_seq_length 1536
 
-# 方案 2: 使用 4-bit 量化（可能影响精度）
-python gpt_oss_20b_sft.py --use_4bit --batch_size 6
+# 方案 2: 减小序列长度
+python gpt_oss_20b_sft.py --batch_size 3 --max_seq_length 1024
 
 # 方案 3: 组合优化
-python gpt_oss_20b_sft.py --batch_size 4 --max_seq_length 1024
+python gpt_oss_20b_sft.py --batch_size 2 --max_seq_length 1024
 ```
 
-**注意**: 这些修改会偏离原始 notebook 配置，可能影响训练效果。
+**注意**: 这些修改会偏离 OpenAI Cookbook 的原始配置，可能影响训练效果。当前默认配置（batch_size=4, max_length=2048）已经与官方教程完全一致。
 
 ### 2. 使用多 GPU 训练
 
@@ -350,14 +488,7 @@ torchrun --nproc_per_node=2 gpt_oss_20b_sft.py --mode train
 
 ### 3. 梯度检查点（Gradient Checkpointing）
 
-在代码中启用（会降低训练速度）：
-- 修改训练参数添加: `gradient_checkpointing=True`
-
-### 4. 提高模型质量
-
-- 增加训练数据（扩展数据集）
-- 调整学习率（尝试 1e-5 或 3e-5）
-- 使用更大的 LoRA rank（如 32 或 64）
+默认已启用（`gradient_checkpointing=True`），会降低训练速度但节省显存。
 
 ## 常见问题
 
@@ -374,25 +505,36 @@ A: 有几个选择：
 **Q: 可以使用 A100（80GB）训练吗？**
 A: 不建议。A100 和 H100 都是 80GB 显存，都会遇到 OOM 问题。
 
-**Q: 为什么 notebook 说 H100 可以运行？**
-A: Notebook 是理想情况的估计。实际运行时由于额外的开销（激活值、优化器状态等），峰值显存会超过 80GB。
+**Q: 为什么官方教程说 H100 可以运行？**
+A: 官方教程是理想情况的估计。实际运行时由于额外的开销（激活值、优化器状态等），峰值显存会超过 80GB。本项目基于实际测试经验建议使用 H200。
 
 **Q: 可以训练其他语言吗？**
-A: 可以！只需准备相应语言的推理数据集即可。
+A: 可以！只需准备相应语言的推理数据集即可。由于模型具有强大的零样本泛化能力，即使某种语言不在训练数据中，模型也可能表现良好。
+
+**Q: 什么是 Harmony 格式？为什么要使用它？**
+A: Harmony 是 gpt-oss 模型使用的专门格式，它允许模型将推理过程（thinking/analysis）和最终响应（content/final）分开。这使得：
+   - 推理过程透明可见
+   - 可以用不同语言进行推理和回答
+   - 支持更复杂的多步骤推理
+
+**Q: 我需要手动处理 Chat Template 吗？**
+A: 不需要。TRL 的 `SFTTrainer` 会自动调用 `apply_chat_template()` 来格式化数据集。你只需要确保数据集符合标准的消息格式（包含 `role` 和 `content` 字段）。
 
 **Q: 训练后如何评估模型？**
-A: 可以在多语言测试集上评估推理质量、准确性和流畅度。
+A: 可以在多语言测试集上评估推理质量、准确性和流畅度。关注两个方面：
+   1. 推理过程是否清晰、逻辑正确
+   2. 最终答案是否准确
 
 **Q: 修改超参数后会影响效果吗？**
-A: 会的。减小批次大小、序列长度等会偏离原始 notebook 配置，可能影响最终模型质量。
+A: 会的。当前默认配置已与官方教程完全一致（batch_size=4, learning_rate=2e-4, lora_rank=8 等）。进一步减小批次大小、序列长度等会偏离官方配置，可能影响最终模型质量。
 
 ## 参考资料
 
+- [OpenAI Cookbook 官方教程](https://cookbook.openai.com/articles/gpt-oss/fine-tune-transfomers)
 - [OpenAI GPT-OSS-20B 模型](https://huggingface.co/openai/gpt-oss-20b)
 - [Multilingual-Thinking 数据集](https://huggingface.co/datasets/HuggingFaceH4/Multilingual-Thinking)
 - [TRL 库文档](https://github.com/huggingface/trl)
 - [LoRA 论文](https://arxiv.org/abs/2106.09685)
-- [原始 Notebook](https://github.com/openai/openai-cookbook/blob/main/articles/gpt-oss/fine-tune-transfomers.ipynb)
 
 ## 贡献
 

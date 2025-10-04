@@ -251,16 +251,20 @@ def print_confusion_matrix(confusion_data: Dict):
     labels = confusion_data["all_labels"]
     confusion = confusion_data["confusion_matrix"]
     
-    # Print matrix header
+    # Print matrix header - use shorter labels for display
     print("\n     ", end="")
     for label in labels:
-        print(f"{label:>4s}", end="")
+        # Truncate long labels for display
+        display_label = label if len(label) <= 3 else label[:3]
+        print(f"{display_label:>4s}", end="")
     print("  | Total")
     print("  " + "-" * (len(labels) * 4 + 10))
     
     # Print matrix rows
     for true_label in labels:
-        print(f"{true_label:>2s} | ", end="")
+        # Truncate long labels for display
+        display_label = true_label if len(true_label) <= 2 else true_label[:2]
+        print(f"{display_label:>2s} | ", end="")
         row_total = sum(confusion.get(true_label, {}).values())
         
         for pred_label in labels:
@@ -389,9 +393,9 @@ def main():
         # Match test sentences to ground truth labels
         for sentence in test_sentences:
             label = sentence_to_label.get(sentence)
-            ground_truth.append(label if label else "unknown")
+            ground_truth.append(label if label else "?")
         
-        matched = sum(1 for gt in ground_truth if gt != "unknown")
+        matched = sum(1 for gt in ground_truth if gt != "?")
         print(f"Matched {matched}/{len(test_sentences)} test sentences to training data")
         
         if matched == 0:

@@ -158,56 +158,21 @@ bash train_trl.sh
 bash train_trl.sh "Qwen/Qwen3-30B-A3B-Instruct-2507" "./models/my_model"
 ```
 
-#### Option B: Multi-GPU Training (Recommended for 2-8 GPUs)
+#### Option B: Multi-GPU Training - FSDP Mode ⭐ **RECOMMENDED for 30B model**
 
 ```bash
-# Automatically uses all available GPUs
-bash train_trl_multi_gpu.sh
+# FSDP: Model is sharded across GPUs (much more memory efficient!)
+bash train_trl_fsdp.sh
 
 # Or specify custom model
-bash train_trl_multi_gpu.sh "Qwen/Qwen3-30B-A3B-Instruct-2507" "./models/my_model"
-
-# Or use torchrun directly for full control
-torchrun --nproc_per_node=8 train_sft_trl.py \
-    --model_name Qwen/Qwen3-30B-A3B-Instruct-2507 \
-    --output_dir ./models/prompt_distillation_trl \
-    --train_file ./data/prompt_distillation_lang.jsonl \
-    --use_lora \
-    --lora_rank 32 \
-    --lora_alpha 16 \
-    --num_train_epochs 1 \
-    --per_device_train_batch_size 4 \
-    --gradient_accumulation_steps 4 \
-    --learning_rate 2e-4 \
-    --max_length 2048 \
-    --warmup_ratio 0.03 \
-    --lr_scheduler_type cosine_with_min_lr
+bash train_trl_fsdp.sh "Qwen/Qwen3-30B-A3B-Instruct-2507" "./models/my_model"
 ```
 
-**Multi-GPU Notes:**
-- The script automatically detects and uses all available GPUs
-- Effective batch size = `per_device_batch_size × gradient_accumulation_steps × num_gpus`
-- For 8 GPUs: effective batch size = 4 × 4 × 8 = **128** (matching tinker!)
-- For 1 GPU: effective batch size = 4 × 4 × 1 = **16** (still good for training)
-- Training speed scales nearly linearly with number of GPUs
-
 The training script will:
-- Load the student model (Qwen2.5-3B-Instruct by default)
+- Load the student model
 - Apply LoRA for efficient training
 - Train on the distilled dataset
 - Save the fine-tuned model with LoRA adapters
-
-**Training time estimates (1 epoch):**
-- 1x H100 GPU: ~15-30 minutes
-- 2x H100 GPUs: ~8-15 minutes
-- 4x H100 GPUs: ~4-8 minutes
-- 8x H100 GPUs: ~2-5 minutes
-
-**Multi-GPU support:**
-- TRL uses PyTorch DDP (Distributed Data Parallel) by default
-- Supports FSDP (Fully Sharded Data Parallel) for very large models
-- Launch with `torchrun` or `accelerate launch`
-- Scales efficiently across multiple GPUs
 
 ### Step 3: Use Your Model
 
@@ -255,14 +220,15 @@ print(f"Language: {response}")  # Should output: fr
 ## Project Structure
 
 ```
-verl-prompt-distillation/
+prompt-distillation/
 ├── README.md                          # This file
 ├── requirements.txt                   # Python dependencies
 ├── create_data.py                     # Data generation script (Step 1)
 ├── create_data_h100x8.sh              # Parallel data generation for H100x8
 ├── train_sft_trl.py                   # Training script using TRL (Step 2)
 ├── train_trl.sh                       # Single GPU training
-├── train_trl_multi_gpu.sh             # Multi-GPU training (2-8 GPUs)
+├── train_trl_multi_gpu.sh             # Multi-GPU DDP training
+├── train_trl_fsdp.sh                  # Multi-GPU FSDP training ⭐ Recommended
 ├── data/                              # Generated training data
 │   └── prompt_distillation_lang.jsonl
 └── models/                            # Trained model checkpoints
@@ -373,12 +339,33 @@ This dramatic speedup makes the distilled model practical for **production deplo
 
 ### Out of Memory (OOM)
 
-If you encounter OOM errors during training:
+The 30B model is very large! If you still encounter OOM errors:
 
-1. Reduce `per_device_train_batch_size` (e.g., from 8 to 4)
-2. Reduce `max_seq_length` (e.g., from 4096 to 2048)
-3. Increase `gradient_accumulation_steps` to maintain effective batch size
-4. Enable gradient checkpointing (already enabled by default)
+**For Multi-GPU Training (8 GPUs):**
+1. **Use FSDP mode** (recommended): `bash train_trl_fsdp.sh`
+   - Shards model across GPUs (~10-15GB per GPU)
+   - Can use full hyperparameters (batch=4, length=2048)
+2. If using DDP mode and getting OOM:
+   - Already optimized with batch_size=1, max_length=512
+   - Reduce `max_length` further (e.g., 256)
+   - Or reduce `lora_rank` from 32 to 16 or 8
+
+**For Single GPU Training:**
+- **Not recommended** for 30B model on single GPU
+- Use a smaller model instead:
+  - Qwen2.5-7B-Instruct (~28GB memory)
+  - Qwen2.5-14B-Instruct (~50GB memory)
+  - Change `--model_name` in the training script
+
+**Memory Requirements by Model:**
+- 7B model: ~28GB per GPU (fits comfortably)
+- 14B model: ~50GB per GPU (LoRA + batch_size=2)
+- 30B model: ~70GB per GPU (LoRA + batch_size=1, max_length=512)
+
+**Why DDP uses more memory than expected:**
+- In DDP, each GPU loads the **full model** (not sharded)
+- 30B params × 2 bytes (bf16) = 60GB just for weights
+- Add LoRA adapters, optimizer states, activations → ~70-75GB total
 
 ### Data Generation Issues
 

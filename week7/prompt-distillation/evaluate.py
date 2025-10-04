@@ -3,6 +3,10 @@ Evaluation script for the distilled prompt model.
 
 This script evaluates the student model's performance on language classification
 without providing the detailed prompt.
+
+The student model (Qwen3-30B-A3B-Instruct) has been distilled from the teacher
+(Qwen3-30B-A3B-Thinking) which used a 2000+ token prompt. After distillation,
+the student responds directly without needing the prompt or thinking process.
 """
 
 import argparse
@@ -17,13 +21,13 @@ from peft import PeftModel
 from tqdm import tqdm
 
 
-def load_model(model_path: str, base_model: str = "Qwen/Qwen3-4B-Instruct-2507"):
+def load_model(model_path: str, base_model: str = "Qwen/Qwen3-30B-A3B-Instruct-2507"):
     """Load the fine-tuned model with LoRA adapters."""
     print(f"Loading base model: {base_model}")
     tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
     model = AutoModelForCausalLM.from_pretrained(
         base_model,
-        torch_dtype=torch.float16,
+        torch_dtype=torch.bfloat16,
         device_map="auto",
         trust_remote_code=True,
     )
@@ -154,8 +158,8 @@ def main():
     parser.add_argument(
         "--base_model",
         type=str,
-        default="Qwen/Qwen3-4B-Instruct-2507",
-        help="Base student model name",
+        default="Qwen/Qwen3-30B-A3B-Instruct-2507",
+        help="Base student model name (non-thinking variant)",
     )
     parser.add_argument(
         "--test_file",
@@ -220,14 +224,18 @@ def main():
     print("\n" + "="*60)
     print("EVALUATION RESULTS")
     print("="*60)
-    print(f"Total samples: {results['total']}")
-    print(f"Successfully predicted: {results['predicted']}")
-    print(f"Unparseable responses: {results['unparseable']}")
-    print(f"Parse rate: {results['predicted']/results['total']*100:.2f}%")
+    print(f"Model: {args.base_model}")
+    print(f"Adapter: {args.model_path}")
+    print(f"\nPerformance:")
+    print(f"  Total samples: {results['total']}")
+    print(f"  Successfully predicted: {results['predicted']}")
+    print(f"  Unparseable responses: {results['unparseable']}")
+    print(f"  Parse rate: {results['predicted']/results['total']*100:.2f}%")
     
     if "accuracy" in results:
-        print(f"\nAccuracy: {results['accuracy']*100:.2f}%")
-        print(f"Correct: {results['correct']}/{results['evaluated']}")
+        print(f"\n  Accuracy: {results['accuracy']*100:.2f}%")
+        print(f"  Correct: {results['correct']}/{results['evaluated']}")
+        print(f"\n💡 The model responds directly without the 2000+ token prompt!")
     
     # Save results
     output = {

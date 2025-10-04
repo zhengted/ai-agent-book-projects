@@ -29,7 +29,6 @@ def load_jsonl_dataset(file_path: str) -> Dataset:
     Returns:
         Dataset: Hugging Face Dataset object
     """
-    import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     
     if local_rank == 0:
@@ -69,7 +68,6 @@ def prepare_model_and_tokenizer(model_name: str, use_lora: bool = True,
     Returns:
         tuple: (model, tokenizer, peft_config or None)
     """
-    import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     
     if local_rank == 0:
@@ -181,7 +179,6 @@ def train_model(
     Returns:
         SFTTrainer: The trained trainer object
     """
-    import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     
     if local_rank == 0:
@@ -193,9 +190,18 @@ def train_model(
     world_size = torch.cuda.device_count() if torch.cuda.is_available() else 1
     effective_batch_size = per_device_train_batch_size * gradient_accumulation_steps * world_size
     
+    # Detect distributed mode
+    distributed_mode = "Single GPU"
+    if int(os.environ.get("WORLD_SIZE", "1")) > 1:
+        if os.environ.get("ACCELERATE_USE_FSDP", "false").lower() == "true":
+            distributed_mode = "FSDP (Fully Sharded Data Parallel)"
+        else:
+            distributed_mode = "DDP (Distributed Data Parallel)"
+    
     if local_rank == 0:
         print(f"Training Parameters:")
         print(f"  Output directory: {output_dir}")
+        print(f"  Distributed mode: {distributed_mode}")
         print(f"  Epochs: {num_train_epochs}")
         print(f"  Per-device batch size: {per_device_train_batch_size}")
         print(f"  Gradient accumulation steps: {gradient_accumulation_steps}")
@@ -207,6 +213,10 @@ def train_model(
         print(f"  Max length: {max_length}")
         print(f"  Logging steps: {logging_steps}")
         print(f"  Save strategy: {save_strategy}")
+        
+        # Show memory advantage for FSDP
+        if "FSDP" in distributed_mode:
+            print(f"\n  💡 FSDP Mode: Each GPU holds ~{100/world_size:.1f}% of the model")
     
     # Training configuration (matching OpenAI Cookbook gpt-oss-20b example)
     training_args = SFTConfig(
@@ -256,13 +266,7 @@ def train_model(
         print(f"\n{'='*80}")
         print(f"Starting Training")
         print(f"{'='*80}")
-        print(f"Training time estimates (1 epoch):")
-        print(f"  - 1x H100 GPU: ~15-30 minutes")
-        print(f"  - 2x H100 GPUs: ~8-15 minutes")
-        print(f"  - 4x H100 GPUs: ~4-8 minutes")
-        print(f"  - 8x H100 GPUs: ~2-5 minutes")
-        print(f"{'='*80}\n")
-    
+
     trainer.train()
     
     if local_rank == 0:
@@ -421,7 +425,6 @@ def main():
     )
     
     # Save final model (only main process)
-    import os
     local_rank = int(os.environ.get("LOCAL_RANK", 0))
     
     if local_rank == 0:

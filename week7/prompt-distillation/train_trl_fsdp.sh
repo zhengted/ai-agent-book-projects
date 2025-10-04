@@ -1,8 +1,7 @@
 #!/bin/bash
-# Multi-GPU training script using Hugging Face TRL
-#
-# This script automatically uses all available GPUs for distributed training.
-# Works with any number of GPUs (1, 2, 4, 8, etc.)
+# FSDP (Fully Sharded Data Parallel) training for 30B model
+# FSDP shards the model across GPUs - much more memory efficient than DDP!
+# Each GPU only holds ~1/8 of the model instead of the full model
 
 set -x
 
@@ -15,12 +14,13 @@ TRAIN_FILE=${3:-"./data/prompt_distillation_lang.jsonl"}
 NUM_GPUS=$(nvidia-smi --list-gpus | wc -l)
 
 echo "============================================"
-echo "Multi-GPU Training with TRL"
+echo "FSDP Training - Memory Efficient!"
 echo "============================================"
 echo "Model: $MODEL_NAME"
 echo "Output: $OUTPUT_DIR"
 echo "Train file: $TRAIN_FILE"
 echo "Number of GPUs: $NUM_GPUS"
+echo "Mode: FSDP (Fully Sharded Data Parallel)"
 echo "============================================"
 echo ""
 
@@ -32,11 +32,15 @@ if [ ! -f "$TRAIN_FILE" ]; then
     exit 1
 fi
 
-# Multi-GPU training using torchrun
-# torchrun automatically handles distributed training setup
-torchrun \
-    --nproc_per_node=$NUM_GPUS \
-    --nnodes=1 \
+# FSDP training with OpenAI-style hyperparameters
+# When using LoRA, PEFT handles the auto-wrap policy automatically
+accelerate launch \
+    --mixed_precision bf16 \
+    --num_processes=$NUM_GPUS \
+    --use_fsdp \
+    --fsdp_offload_params false \
+    --fsdp_sharding_strategy FULL_SHARD \
+    --fsdp_state_dict_type FULL_STATE_DICT \
     train_sft_trl.py \
     --model_name "$MODEL_NAME" \
     --output_dir "$OUTPUT_DIR" \
@@ -58,11 +62,16 @@ echo "✅ Training Complete!"
 echo "============================================"
 echo "Model saved to: $OUTPUT_DIR"
 echo "Number of GPUs used: $NUM_GPUS"
+echo "Mode: FSDP (each GPU held ~1/$NUM_GPUS of the model)"
 echo ""
 echo "Effective batch size: $((4 * 4 * NUM_GPUS))"
 echo "  = per_device_batch_size (4)"
 echo "  × gradient_accumulation_steps (4)"
 echo "  × num_gpus ($NUM_GPUS)"
+echo ""
+echo "Memory Advantage:"
+echo "  DDP: Each GPU holds 100% of model (~70GB)"
+echo "  FSDP: Each GPU holds ~12.5% of model (~10-15GB)"
 echo ""
 echo "To test the model, run:"
 echo "  python evaluate_trl.py --model_path $OUTPUT_DIR"

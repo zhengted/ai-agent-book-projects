@@ -86,9 +86,6 @@ Intuitor 通过使用**自我确定性（Self-Certainty）**作为内在奖励�
 
 ### ⚡ 为什么 Intuitor 如此重要？
 
-<details>
-<summary><b>点击展开：三条曲线视角下的突破性意义</b></summary>
-
 #### 🎯 核心突破
 
 Intuitor 不仅仅是"又一个推理模型"，它代表了 LLM 能力提升的**范式转变**：
@@ -132,8 +129,6 @@ Intuitor 不仅仅是"又一个推理模型"，它代表了 LLM 能力提升的*
 - 人类无法提供可靠的"正确答案"作为监督
 - RLIF 成为唯一可行的提升路径
 - Intuitor 为通往 AGI 的"自我进化"提供了方法论
-
-</details>
 
 ---
 

@@ -280,9 +280,13 @@ python -m verl.model_merger merge \
 - `--local_dir`：训练检查点的路径（根据实际路径调整）
 - `--target_dir`：输出的 Hugging Face 格式模型目录
 
-### 3. 修改 lighteval 配置（重要！）
+### 3. 修改 lighteval 源码（重要！）
 
-**在评测前必须修改 lighteval 源码**，否则默认的 256 token generation size 不足以让模型完成推理过程。
+**在评测前必须修改 lighteval 源码**，否则会遇到两个问题：
+1. 默认的 256 token generation size 不足以让模型完成推理
+2. 默认的 normalizer 无法识别 `\boxed{}` 格式的答案
+
+#### 步骤 1：修改 generation_size
 
 找到 lighteval 安装路径中的任务配置文件：
 
@@ -292,11 +296,10 @@ python3 -c "import lighteval; print(lighteval.__file__)"
 # 输出示例：/path/to/site-packages/lighteval/__init__.py
 
 # 编辑任务配置文件
-# 文件路径：/path/to/site-packages/lighteval/tasks/default_tasks.py
 vim $(python3 -c "import lighteval.tasks.default_tasks as t; print(t.__file__)")
 ```
 
-在 `default_tasks.py` 中找到 GSM8 Leaderboard 的配置（搜索 `"gsm8k_leaderboard"`），将 `generation_size` 从 `256` 修改为 `2048`：
+在 `default_tasks.py` 中找到 GSM8K Leaderboard 的配置（搜索 `"gsm8k_leaderboard"`），将 `generation_size` 从 `256` 修改为 `2048`：
 
 ```python
 # 修改前：
@@ -316,10 +319,63 @@ LightevalTaskConfig(
 )
 ```
 
-**为什么需要修改？**
-- Intuitor 生成包含详细推理步骤的 CoT（Chain-of-Thought）
-- 256 tokens 通常只能生成一半的推理过程，导致答案被截断
-- 截断的输出无法提取最终答案，评测结果会是 0%
+#### 步骤 2：修改 gsm8k_normalizer 支持 \\boxed{} 格式
+
+找到并编辑 normalizer 文件：
+
+```bash
+# 编辑 normalizations.py
+vim $(python3 -c "import lighteval.metrics.normalizations as n; print(n.__file__)")
+```
+
+找到 `gsm8k_normalizer` 函数（约第 379 行），将其替换为以下代码：
+
+```python
+def gsm8k_normalizer(text: str) -> str:
+    """From https://github.com/openai/grade-school-math/blob/3101c7d5072418e28b9008a6636bde82a006892c/grade_school_math/dataset.py#L28
+    
+    Extended to support \\boxed{} format commonly used by reasoning models.
+
+    Args:
+        text (str): input text
+
+    Returns:
+        str: Output text, either the number found in the text or "[invalid]" if
+        no number was found
+    """
+    INVALID_ANS = "[invalid]"
+    
+    # Try to extract from \\boxed{} format first (for reasoning models like Intuitor)
+    # This pattern matches both \boxed{number} and \(\boxed{number}\)
+    boxed_match = re.search(r'\\boxed\{([^}]+)\}', text)
+    if boxed_match:
+        match_str = boxed_match.group(1).strip()
+        match_str = match_str.replace(",", "")
+        # Extract only the number part (remove any non-numeric trailing text)
+        number_match = re.search(r'-?[0-9\.\,]+', match_str)
+        if number_match:
+            return number_match.group(0).replace(",", "")
+    
+    # Original #### format (for standard GSM8K format)
+    ans_re = re.compile(r"#### (\-?[0-9\.\,]+)")
+    match = ans_re.search(text)
+    if match:
+        match_str = match.group(1).strip()
+        match_str = match_str.replace(",", "")
+        return match_str
+    
+    # If no pattern matched, return invalid
+    return INVALID_ANS
+```
+
+**修改说明**：
+- ✅ **向后兼容**：保留了原有的 `####` 格式支持
+- ✅ **支持 `\boxed{}`**：可识别 `\boxed{52}` 和 `\(\boxed{5}\)` 等 LaTeX boxed 格式
+- ✅ **自动提取数字**：即使 boxed 中包含单位（如 `\boxed{52 WPM}`）也能提取数字
+
+**为什么需要这两处修改？**
+- **Generation size**：Intuitor 生成包含详细推理步骤的 CoT，256 tokens 会导致答案被截断
+- **Normalizer**：Intuitor 输出 LaTeX `\boxed{}` 格式，与 GSM8K 标准的 `####` 格式不同
 
 ### 4. 使用 lighteval 评测
 
@@ -341,6 +397,52 @@ ls ./eval_results/
 
 # 查看详细结果（JSON 格式）
 cat ./eval_results/results.json
+```
+
+#### 从缓存的 parquet 重新计算准确率
+
+如果 lighteval 显示 0% 准确率（因为模型输出 `\boxed{}` 格式而非 `####` 格式），可以使用提供的脚本从缓存的 parquet 文件重新计算准确率：
+
+```bash
+# 找到缓存的 parquet 文件
+# 路径格式：~/.cache/huggingface/lighteval/{model_name}/{hash}/leaderboard|gsm8k|0/{hash}/GENERATIVE.parquet
+ls ~/.cache/huggingface/lighteval/math_intuitor_model/*/leaderboard\|gsm8k\|0/*/GENERATIVE.parquet
+
+# 使用脚本重新计算准确率（支持 \boxed{} 格式）
+python3 evaluate_from_cache.py \
+    ~/.cache/huggingface/lighteval/math_intuitor_model/*/leaderboard\|gsm8k\|0/*/GENERATIVE.parquet
+
+# 显示详细信息和错误样本
+python3 evaluate_from_cache.py \
+    ~/.cache/huggingface/lighteval/math_intuitor_model/*/leaderboard\|gsm8k\|0/*/GENERATIVE.parquet \
+    -v
+
+# 保存结果到 JSON 文件
+python3 evaluate_from_cache.py \
+    ~/.cache/huggingface/lighteval/math_intuitor_model/*/leaderboard\|gsm8k\|0/*/GENERATIVE.parquet \
+    -o results.json
+```
+
+**脚本功能**：
+- ✅ 支持 `\boxed{}` 格式答案提取（包括 `\(\boxed{}\)` 等变体）
+- ✅ 自动从 Hugging Face 加载 GSM8K 金标答案
+- ✅ 标准化数字格式（去除逗号、空格等）
+- ✅ 显示详细的错误样本分析
+
+**示例输出**：
+```
+📂 读取预测结果: /root/.cache/huggingface/lighteval/.../GENERATIVE.parquet
+📊 总样本数: 1319
+📥 加载 GSM8K 金标答案...
+
+================================================================================
+📈 评测结果
+================================================================================
+总样本数: 1319
+正确数量: 623
+错误数量: 696
+准确率: 47.23%
+================================================================================
 ```
 
 ### 6. 论文中的评测基准

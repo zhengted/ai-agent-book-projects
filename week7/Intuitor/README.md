@@ -250,9 +250,21 @@ bash math_intuitor.sh
 
 ## 📊 模型评测
 
-训练完成后，可以使用以下步骤评测模型性能。
+训练完成后，按照论文方法使用 **[lighteval](https://github.com/huggingface/lighteval)** 进行标准化评测。
 
-### 1. 转换模型格式
+> **为什么使用 lighteval？**
+> - ✅ 论文使用的官方评测工具
+> - ✅ Hugging Face Leaderboard 的标准评测框架
+> - ✅ 支持 7,000+ 评测任务，覆盖数学、代码、多语言等
+> - ✅ 统一的评测标准，结果可对比
+
+### 1. 安装 lighteval
+
+```bash
+pip install lighteval
+```
+
+### 2. 转换模型格式
 
 首先将训练检查点转换为 Hugging Face 格式：
 
@@ -268,25 +280,83 @@ python -m verl.model_merger merge \
 - `--local_dir`：训练检查点的路径（根据实际路径调整）
 - `--target_dir`：输出的 Hugging Face 格式模型目录
 
-### 2. 使用 GSM8K 评测
+### 3. 修改 lighteval 配置（重要！）
 
-我们使用 [GSM8K-eval](https://github.com/Guangxuan-Xiao/GSM8K-eval) 工具进行评测：
+**在评测前必须修改 lighteval 源码**，否则默认的 256 token generation size 不足以让模型完成推理过程。
+
+找到 lighteval 安装路径中的任务配置文件：
 
 ```bash
-# 克隆 GSM8K-eval 仓库
-git clone https://github.com/Guangxuan-Xiao/GSM8K-eval.git
-cd GSM8K-eval
+# 找到 lighteval 安装位置
+python3 -c "import lighteval; print(lighteval.__file__)"
+# 输出示例：/path/to/site-packages/lighteval/__init__.py
 
-# 安装依赖
-pip install -r requirements.txt
-
-# 运行评测
-python main.py \
-    --model_name_or_path ../Intuitor/verl-intuitor/math_intuitor_model/ \
-    --output_dir outputs/
+# 编辑任务配置文件
+# 文件路径：/path/to/site-packages/lighteval/tasks/default_tasks.py
+vim $(python3 -c "import lighteval.tasks.default_tasks as t; print(t.__file__)")
 ```
 
-评测结果将保存在 `outputs/` 目录中。
+在 `default_tasks.py` 中找到 GSM8 Leaderboard 的配置（搜索 `"gsm8k_leaderboard"`），将 `generation_size` 从 `256` 修改为 `2048`：
+
+```python
+# 修改前：
+LightevalTaskConfig(
+    name="gsm8k",
+    ...
+    generation_size=256,  # ← 原始值太小
+    ...
+)
+
+# 修改后：
+LightevalTaskConfig(
+    name="gsm8k",
+    ...
+    generation_size=2048,  # ← 改为 2048，为推理链提供足够的 token budget
+    ...
+)
+```
+
+**为什么需要修改？**
+- Intuitor 生成包含详细推理步骤的 CoT（Chain-of-Thought）
+- 256 tokens 通常只能生成一半的推理过程，导致答案被截断
+- 截断的输出无法提取最终答案，评测结果会是 0%
+
+### 4. 使用 lighteval 评测
+
+#### 评测 GSM8K（数学推理）
+
+```bash
+lighteval accelerate \
+    "model_name=math_intuitor_model/" \
+    "leaderboard|gsm8k|0"
+```
+
+### 5. 查看评测结果
+
+lighteval 会自动生成详细的评测报告：
+
+```bash
+# 结果保存在指定的输出目录
+ls ./eval_results/
+
+# 查看详细结果（JSON 格式）
+cat ./eval_results/results.json
+```
+
+### 6. 论文中的评测基准
+
+根据论文，以下是主要的评测基准：
+
+| 基准 | lighteval 任务名 | 类型 | 用途 |
+|------|----------------|------|------|
+| **GSM8K** | `leaderboard|gsm8k|0` | 数学推理 | 域内性能 |
+| **MATH500** | `leaderboard|math500|0` | 高级数学 | 域内性能 |
+| **LiveCodeBench** | `leaderboard|lcb|0` | 代码生成 | 域外泛化 |
+| **CRUXEval-O** | `leaderboard|cruxeval|0` | 代码推理 | 域外泛化 |
+| **MMLU-Pro** | `leaderboard|mmlu_pro|0` | 通用知识 | 通用能力 |
+| **AlpacaEval** | 需单独工具 | 指令遵循 | 对话能力 |
+
+**注意**：AlpacaEval 需要使用其[官方工具](https://github.com/tatsu-lab/alpaca_eval)进行评测，因为它需要 GPT-4 作为评判器。
 
 ## 📈 实验结果
 
